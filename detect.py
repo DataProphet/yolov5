@@ -201,6 +201,30 @@ def run(
                         annotator.box_label(xyxy, label, color=colors(c, True))
                     if save_crop:
                         save_one_box(xyxy, imc, file=save_dir / 'crops' / names[c] / f'{p.stem}.jpg', BGR=True)
+    
+                    xcoord = xyxy[2]-xyxy[0]
+                    ycoord = xyxy[3]-xyxy[1]
+
+                    currenttimestamp = datetime.now(tz=tz_sast).isoformat(sep=" ")
+                    numeric_payload = [
+                    {
+                    "timestamp": currenttimestamp,
+                    "data_numeric": xcoord,
+                    "data_bool": None,
+                    "data_string": None,
+                    "mimetype": None,
+                    "source_parameter": "person.xcoordinate",
+                    },
+                    {
+                    "timestamp": currenttimestamp,
+                    "data_numeric": ycoord,
+                    "data_bool": None,
+                    "data_string": None,
+                    "mimetype": None,
+                    "source_parameter": "person.ycoordinate",
+                    }
+                    ]
+
 
                 numeric_payload = {
                 "timestamp": datetime.now(tz=tz_sast).isoformat(sep=" "),
