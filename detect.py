@@ -46,6 +46,47 @@ from utils.general import (LOGGER, Profile, check_file, check_img_size, check_im
 from utils.plots import Annotator, colors, save_one_box
 from utils.torch_utils import select_device, smart_inference_mode
 
+import json
+import random
+import time
+from datetime import datetime, timedelta, timezone
+
+import paho.mqtt.client as mqtt
+from io import BytesIO
+from PIL import Image
+import base64
+
+
+mqtt_host = "192.168.0.109"
+mqtt_port = 1883
+mqtt_topic = "6/purple-team"
+
+
+# (optional) paho works via callbacks when events occur..
+def on_connect(client, userdata, flags, rc):
+    print("Connected with result code " + str(rc))
+
+
+# Other optional callbacks like on_publish, on_disconnect, etc
+# can also be defined..
+def on_publish(client, userdata, mid):
+    print(f"Message published - message_id={mid}")
+
+client = mqtt.Client()
+client.on_connect = on_connect
+client.on_publish = on_publish
+
+# Connect to the broker
+print(f"Connecting to {mqtt_host}:{mqtt_port}")
+client.connect(mqtt_host, port=mqtt_port, keepalive=60)
+
+# Start a threaded network loop. See paho docs for more..
+client.loop_start()
+
+# All CONNECT payloads MUST include timezone info..
+# Create a simple SAST (UTC+2) timezone
+tz_sast = timezone(offset=timedelta(hours=2))
+
 
 @smart_inference_mode()
 def run(
@@ -100,15 +141,14 @@ def run(
         cudnn.benchmark = True  # set True to speed up constant image size inference
         dataset = LoadStreams(source, img_size=imgsz, stride=stride, auto=pt)
         bs = len(dataset)  # batch_size
-    else:
-        dataset = LoadImages(source, img_size=imgsz, stride=stride, auto=pt)
-        bs = 1  # batch_size
-    vid_path, vid_writer = [None] * bs, [None] * bs
+    # else:
+    #     dataset = LoadImages(source, img_size=imgsz, stride=stride, auto=pt)
+    #     bs = 1  # batch_size
 
     # Run inference
     model.warmup(imgsz=(1 if pt else bs, 3, *imgsz))  # warmup
     seen, windows, dt = 0, [], (Profile(), Profile(), Profile())
-    for path, im, im0s, vid_cap, s in dataset:
+    for path, im, im0s, _, s in dataset:
         with dt[0]:
             im = torch.from_numpy(im).to(device)
             im = im.half() if model.fp16 else im.float()  # uint8 to fp16/32
@@ -138,8 +178,6 @@ def run(
                 p, im0, frame = path, im0s.copy(), getattr(dataset, 'frame', 0)
 
             p = Path(p)  # to Path
-            save_path = str(save_dir / p.name)  # im.jpg
-            txt_path = str(save_dir / 'labels' / p.stem) + ('' if dataset.mode == 'image' else f'_{frame}')  # im.txt
             s += '%gx%g ' % im.shape[2:]  # print string
             gn = torch.tensor(im0.shape)[[1, 0, 1, 0]]  # normalization gain whwh
             imc = im0.copy() if save_crop else im0  # for save_crop
@@ -149,17 +187,13 @@ def run(
                 det[:, :4] = scale_coords(im.shape[2:], det[:, :4], im0.shape).round()
 
                 # Print results
+                det = det[det[..., -1] == 0]
                 for c in det[:, -1].unique():
                     n = (det[:, -1] == c).sum()  # detections per class
                     s += f"{n} {names[int(c)]}{'s' * (n > 1)}, "  # add to string
-
+                    
                 # Write results
                 for *xyxy, conf, cls in reversed(det):
-                    if save_txt:  # Write to file
-                        xywh = (xyxy2xywh(torch.tensor(xyxy).view(1, 4)) / gn).view(-1).tolist()  # normalized xywh
-                        line = (cls, *xywh, conf) if save_conf else (cls, *xywh)  # label format
-                        with open(f'{txt_path}.txt', 'a') as f:
-                            f.write(('%g ' * len(line)).rstrip() % line + '\n')
 
                     if save_img or save_crop or view_img:  # Add bbox to image
                         c = int(cls)  # integer class
@@ -168,39 +202,46 @@ def run(
                     if save_crop:
                         save_one_box(xyxy, imc, file=save_dir / 'crops' / names[c] / f'{p.stem}.jpg', BGR=True)
 
+                numeric_payload = {
+                "timestamp": datetime.now(tz=tz_sast).isoformat(sep=" "),
+                "data_numeric": len(det),
+                "data_bool": None,
+                "data_string": None,
+                "mimetype": None,
+                "source_parameter": "people.count",
+                }
+
+                # MQTT Payloads must be strings, bytes or numeric.
+                # NB: JSON encode our dict!
+                # image_res = client.publish(mqtt_topic, payload=json.dumps(image_payload))
+                _ = client.publish(mqtt_topic, payload=json.dumps(numeric_payload))
+
+
             # Stream results
             im0 = annotator.result()
-            if view_img:
-                if platform.system() == 'Linux' and p not in windows:
-                    windows.append(p)
-                    cv2.namedWindow(str(p), cv2.WINDOW_NORMAL | cv2.WINDOW_KEEPRATIO)  # allow window resize (Linux)
-                    cv2.resizeWindow(str(p), im0.shape[1], im0.shape[0])
-                cv2.imshow(str(p), im0)
-                cv2.waitKey(1)  # 1 millisecond
+            im0 = im0[:, :, ::-1]
+            img_crop_pil = Image.fromarray(im0, "RGB")
+            buffer = BytesIO()
+            img_crop_pil.save(buffer, format='jpeg')
+            buffer.seek(0)
+            img_byte = buffer.getvalue()
+            image_string = base64.b64encode(img_byte).decode()
 
-            # Save results (image with detections)
-            if save_img:
-                if dataset.mode == 'image':
-                    cv2.imwrite(save_path, im0)
-                else:  # 'video' or 'stream'
-                    if vid_path[i] != save_path:  # new video
-                        vid_path[i] = save_path
-                        if isinstance(vid_writer[i], cv2.VideoWriter):
-                            vid_writer[i].release()  # release previous video writer
-                        if vid_cap:  # video
-                            fps = vid_cap.get(cv2.CAP_PROP_FPS)
-                            w = int(vid_cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-                            h = int(vid_cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-                        else:  # stream
-                            fps, w, h = 30, im0.shape[1], im0.shape[0]
-                        save_path = str(Path(save_path).with_suffix('.mp4'))  # force *.mp4 suffix on results videos
-                        vid_writer[i] = cv2.VideoWriter(save_path, cv2.VideoWriter_fourcc(*'mp4v'), fps, (w, h))
-                    vid_writer[i].write(im0)
+            image_payload = {
+                "timestamp": datetime.now(tz=tz_sast).isoformat(sep=" "),
+                "data_numeric": None,
+                "data_bool": None,
+                "data_string": image_string,
+                "mimetype": "image",
+                "source_parameter": "people.boxes"
+            }
+            _ = client.publish(mqtt_topic, payload=json.dumps(image_payload))
+            time.sleep(5)
+
 
         # Print time (inference-only)
         LOGGER.info(f"{s}{'' if len(det) else '(no detections), '}{dt[1].dt * 1E3:.1f}ms")
-
-    # Print results
+    # # Print results
     t = tuple(x.t / seen * 1E3 for x in dt)  # speeds per image
     LOGGER.info(f'Speed: %.1fms pre-process, %.1fms inference, %.1fms NMS per image at shape {(1, 3, *imgsz)}' % t)
     if save_txt or save_img:
@@ -208,7 +249,6 @@ def run(
         LOGGER.info(f"Results saved to {colorstr('bold', save_dir)}{s}")
     if update:
         strip_optimizer(weights[0])  # update model (to fix SourceChangeWarning)
-
 
 def parse_opt():
     parser = argparse.ArgumentParser()
