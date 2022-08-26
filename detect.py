@@ -224,6 +224,8 @@ def run(
                     "source_parameter": "person.ycoordinate",
                     }
                     ]
+                    _ = client.publish(mqtt_topic, payload=json.dumps(numeric_payload))
+                    time.sleep(0.1)
 
 
                 numeric_payload = {
