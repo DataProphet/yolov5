@@ -57,9 +57,9 @@ from PIL import Image
 import base64
 
 
-mqtt_host = "192.168.0.109"
-mqtt_port = 1883
-mqtt_topic = "6/purple-team"
+mqtt_host = "10.96.131.19"
+mqtt_port = 8883
+mqtt_topic = "6/dataprophet-dev/convention-demo"
 
 
 # (optional) paho works via callbacks when events occur..
@@ -77,8 +77,15 @@ client.on_connect = on_connect
 client.on_publish = on_publish
 
 # Connect to the broker
+ca_cert = Path("./dataprophet-dev_convention-demo.ca")
+cert_file = Path("./dataprophet-dev_convention-demo.crt")
+key_file = Path("./dataprophet-dev_convention-demo.key")
+if not ca_cert.exists() & cert_file.exists() & key_file.exists():
+    raise ValueError("Paths to auth files do not exist")
+
 print(f"Connecting to {mqtt_host}:{mqtt_port}")
-client.connect(mqtt_host, port=mqtt_port, keepalive=60)
+client.tls_set(ca_certs=ca_cert, certfile=cert_file, keyfile=key_file)
+client.connect(mqtt_host, port=mqtt_port, keepalive=60, )
 
 # Start a threaded network loop. See paho docs for more..
 client.loop_start()
@@ -224,6 +231,8 @@ def run(
                     "source_parameter": "person.ycoordinate",
                     }
                     ]
+                    _ = client.publish(mqtt_topic, payload=json.dumps(numeric_payload))
+                    time.sleep(0.1)
 
 
                 numeric_payload = {
